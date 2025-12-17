@@ -37,7 +37,9 @@ class ArmSim:
         self.log.insert(self.t, self.state)
     
     def dynamics_true(self, state, u):
-        torque = u*self.constants.MotorKt + -1 * np.tanh(20*state[2:4]) - 0.01*state[2:4]
+        torque = u*self.constants.MotorKt  -1 * np.tanh(20*state[2:4]) - 0.01*state[2:4]
+        #my solution
+        #torque = u*self.constants.MotorKt + np.array(Math.sign(state[2] * (-0.5)), Math.sign(state[3] * (-0.5)))
         (M, C, G) = self.get_dynamics_matrices(state)
         omega_vec = state[2:4]
         accel_vector = np.linalg.inv(M) @ (torque - C @ omega_vec - G)
