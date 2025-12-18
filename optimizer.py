@@ -10,7 +10,7 @@ import json
 import keyboard
 import frccontrol as frc
 import math
-
+from collections import deque
 
 
 class ArmSim:
@@ -24,8 +24,12 @@ class ArmSim:
         self.constants = ArmConstantsReal()
 
         self.t = 0.0
-        self.log = frc.Trajectory(np.array([self.t]), start_state.reshape(-1,1))
-        self.loop_time = 0.020
+        M,C,G = self.get_dynamics_matrices(start_state)
+
+        self.log = frc.Trajectory(np.array([self.t]), np.concatenate((start_state, G)).reshape(-1,1))
+                                                                     
+                                                                  
+        
 
         #represents current added from feedback
         self.u_k = np.zeros((2,1))
@@ -34,24 +38,34 @@ class ArmSim:
     def step(self, u_ff, u_k):
         self.state = frc.rkdp(self.dynamics_true, self.state, self.u_ff + self.u_k, self.dt)
         self.t+= self.dt
-        self.log.insert(self.t, self.state)
+        
     
     def dynamics_true(self, state, u):
-        torque = u*self.constants.MotorKt  -1 * np.tanh(20*state[2:4]) - 0.01*state[2:4]
+        #tanh avoids the discontinuity of signum function
+        #tanh is used to add frictional torque opposing motion
+        
+        torque = u*self.constants.MotorKt  -5 * (np.tanh(state[2:4]))
+       
         #my solution
         #torque = u*self.constants.MotorKt + np.array(Math.sign(state[2] * (-0.5)), Math.sign(state[3] * (-0.5)))
         (M, C, G) = self.get_dynamics_matrices(state)
         omega_vec = state[2:4]
         accel_vector = np.linalg.inv(M) @ (torque - C @ omega_vec - G)
         state_derivative_vector = np.concatenate((omega_vec, accel_vector))
+        self.log.insert(self.t, np.concatenate((self.state, torque)).reshape(-1,1))
+        
+        
+       # if (abs(accel_vector[0]) < 0.5 and abs(accel_vector[1]) < -0.5):
+       #    print(G)
+       
         return state_derivative_vector
 
     def forward_kinematics(self, state):
         [theta1, theta2] = state[:2].flatten()
-        print(theta1, theta2)
+        #print(theta1, theta2)
         joint2 = np.array([self.constants.length_bottom*np.cos(theta1), self.constants.length_bottom*np.sin(theta1)])
         end_eff = joint2 + np.array([self.constants.length_top*np.cos(theta1 + theta2), self.constants.length_top*np.sin(theta1 + theta2)])
-        print(joint2, end_eff)
+        #print(joint2, end_eff)
         return (joint2, end_eff)
 
     def get_dynamics_matrices(self, states):
@@ -133,7 +147,22 @@ def main():
         sim.step(np.array([[0],[0]]), np.array([[0],[0]]))
     animate_arm(sim)
 
-def animate_arm(arm: ArmSim, fps = 20):
+def animate_arm(arm: ArmSim, fps = 40):
+
+    def plot_data(t, hist, indices, ax: plt.Axes = None, lines = None):
+        if ax is None and lines is None:
+            raise Exception("Either ax or lines must be given.")
+        data = hist[indices, :]
+        if lines is None:
+            for idx in indices:
+                ax.plot(t, hist[idx,:])
+            lines = ax.get_lines()
+        else:
+            for i, idx in enumerate(indices):
+                lines[i].set_data(t, hist[idx,:])
+        return lines
+    
+
     def get_arm_joints(state):
         """Get the xy positions of all three robot joints (?) - base joint (at 0,0), elbow, end effector"""
         (joint_pos, eff_pos) = arm.forward_kinematics(state)
@@ -146,7 +175,7 @@ def animate_arm(arm: ArmSim, fps = 20):
     tvec = np.arange(0, 20 + dt, dt)
 
     fig = plt.figure()
-    ax = fig.add_subplot(1,1,1)
+    ax = fig.add_subplot(4,4,(1,15))
     ax.axis('square')
     ax.grid(True)
     total_len = arm.constants.length_bottom + arm.constants.length_top
@@ -155,10 +184,19 @@ def animate_arm(arm: ArmSim, fps = 20):
     initial_state = arm.log.sample(0)
     (x_init, y_init) = get_arm_joints(initial_state)
     current_line, = ax.plot(x_init, y_init, 'g-o')
-    print(x_init)
-    print(y_init)
-   
 
+    ax1 = fig.add_subplot(4,4,16)
+    ax1.set_aspect('auto')
+    ax1.grid(True)
+    ax1.set_xlim(0, fps)
+    ax1_line, = plot_data(0, initial_state, [4], ax = ax1)
+    ax1.set_xlabel("Time (s)")
+    ax1.set_ylabel("G1 (Nm)")
+    ax1.yaxis.set_label_position("right")
+
+    queue_plotting = deque(maxlen= math.ceil((1/(2*dt))))
+    time_plotting = deque(maxlen= math.ceil(1/(2*dt)))
+    
     def init():
 
         current_line.set_data(x_init, y_init)
@@ -166,9 +204,16 @@ def animate_arm(arm: ArmSim, fps = 20):
     def animate(i):
         t = tvec[i]
         state = arm.log.sample(t)
+        queue_plotting.append(state[4])
+        time_plotting.append(i)
+        ax1.set_xlim(time_plotting[0], time_plotting[0] + fps)
+        ax1.set_ylim(-1, 1)
+        ax1_line.set_data(time_plotting, queue_plotting)
+
         (x_vector, y_vector) = get_arm_joints(state)
         current_line.set_data(x_vector, y_vector)
         
+
         return current_line
     nframes = len(tvec)
     anim = animation.FuncAnimation(fig, animate, init_func = init, frames = nframes, interval = int(dt*1000), blit=False, repeat=True)
