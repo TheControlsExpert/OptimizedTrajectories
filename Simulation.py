@@ -19,27 +19,34 @@ import casadi as ca
 
 class ArmSim:
 
-    def __init__(self, dt, start_state = np.zeros((4,1))):
+    def __init__(self, dt, xyparameters = [0,0]):
         self.dt = dt
-        self.state = start_state
         self.transfom3d_bottomshaft = [0.249, 0.125]
+        self.constants = ArmConstantsReal()
+        self.motor_constants = DCMotorConstants()
+        start_state = np.concatenate((self.inv_kinematics(np.array([xyparameters[0], xyparameters[1]])), np.array([0,0]))).reshape((-1,1))
+        self.state = start_state
+        self.target = np.array([[xyparameters[0]], [xyparameters[1]]])
+        
 
         # state_labels = [("Angle Bottom", "rad"), ("Angle Top", "rad"), ("Angular velocity Bottom", "rad/s"), ("Angular velocity Top", "rad/s")]
         # u_labels = [("Current Bottom", "A"), ("Current Top", "A")]
         # self.set_plot_labels(state_labels, u_labels)
-        self.constants = ArmConstantsReal()
-        self.motor_constants = DCMotorConstants()
+       
 
         self.t = 0.0
         M,C,G = self.get_dynamics_matrices(start_state)
 
-        self.log = frc.Trajectory(np.array([self.t]), np.concatenate((start_state, G)).reshape(-1,1))
-                                                                     
-        #represents current added from feedback
         self.u_k = np.zeros((2,1))
         self.u_ff = np.zeros((2,1))
+        self.kP = 100
 
-    def step(self, u_ff, u_k):
+        self.log = frc.Trajectory(np.array([self.t]), np.concatenate((start_state, np.zeros((2,1)))).reshape(-1,1))
+                                                                     
+        #represents current added from feedback
+       
+
+    def step(self):
         self.state = frc.rkdp(self.dynamics_true, self.state, self.u_ff + self.u_k, self.dt)
         self.t+= self.dt
     
@@ -73,8 +80,9 @@ class ArmSim:
     def dynamics_true(self, state, u):
         #tanh avoids the discontinuity of signum function
         #tanh is used to add frictional torque opposing motion
+        
 
-        torque = u*self.constants.MotorKt  -3.5 * (np.tanh(state[2:4]))
+        torque = u*self.constants.MotorKt  #-0.5 * (np.tanh(100 * state[2:4]))
        
         #my solution
         #torque = u*self.constants.MotorKt + np.array(Math.sign(state[2] * (-0.5)), Math.sign(state[3] * (-0.5)))
@@ -82,7 +90,7 @@ class ArmSim:
         omega_vec = state[2:4]
         accel_vector = np.linalg.inv(M) @ (torque - C @ omega_vec - G)
         state_derivative_vector = np.concatenate((omega_vec, accel_vector))
-        self.log.insert(self.t, np.concatenate((self.state, torque)).reshape(-1,1))
+        self.log.insert(self.t, np.concatenate((self.state, self.target - self.state[0:2])).reshape(-1,1))
         
         
        # if (abs(accel_vector[0]) < 0.5 and abs(accel_vector[1]) < -0.5):
@@ -214,7 +222,7 @@ class DCMotorConstants:
     free_speed_bottomArm = 5800 * 2 * math.pi * (1/60)
     rOhm_bottomArm = nominalVoltageVolts / stall_current_bottomArm
     kV_bottomArm = free_speed_bottomArm / (nominalVoltageVolts - rOhm_bottomArm * free_current_bottomArm)
-    kT_bottomArm = stall_torque_bottomArm / stall_current_bottomArm * 100 
+    kT_bottomArm = stall_torque_bottomArm / stall_current_bottomArm  
 
     stall_torque_topArm= 9.37 * 100 * 1 #gear ratio of 100, 1 KrakenX60 motor
     stall_current_topArm = 483 * 1
@@ -222,7 +230,7 @@ class DCMotorConstants:
     free_speed_topArm = 5800 * 2 * math.pi * (1/60)
     rOhm_topArm = nominalVoltageVolts / stall_current_topArm
     kV_topArm = free_speed_topArm / (nominalVoltageVolts - rOhm_topArm * free_current_topArm)
-    kT_topArm = stall_torque_topArm / stall_current_topArm * 100 
+    kT_topArm = stall_torque_topArm / stall_current_topArm 
 
        
     @staticmethod
@@ -269,29 +277,91 @@ class ArmConstantsReal:
 
         self.MotorKt = 0.4
 def main():
-    
-   
 
-    dt = 0.005
-    state_initial = np.array([math.pi/4,-3/4*math.pi,0,0]).reshape((4,1))
-    sim = ArmSim(dt, start_state = state_initial)
-    n_steps = math.ceil(20/dt)
+    dt_sim = 0.001
+    dt_control = 0.02
 
+    parameters_xy = [[0.391+1, 0.7+0.125], [-0.3, 1.2]]
+    sim = ArmSim(dt_sim, parameters_xy[0])
     traj = Optimizer(sim)
-    parameters_xy = [[0, 1], [0, 1.5]]
+
     theta0 = sim.inv_kinematics(np.array([parameters_xy[0][0], parameters_xy[0][1]]))
     thetaf = sim.inv_kinematics(np.array([parameters_xy[1][0], parameters_xy[1][1]]))
+
     parameters_theta = [theta0, thetaf]
     print("handed over parameters")
     result = traj.solve(parameters_theta)
-    animate_traj(result, traj, sim)
+
+    num_steps = math.ceil((result[0]) / dt_sim)
+   
+
+    t_since_last_control_update = dt_control
+    for i in range(num_steps):
+        if t_since_last_control_update >= dt_control:
+            t_since_last_control_update -= dt_control
+            sample = sampleTrajectory(result, traj, sim.t)
+            sim.target = np.array([[sample[0][0]], [sample[0][1]]]).reshape((-1,1))
+            current = sim.feed_forward(np.array([[sample[0][0]], [sample[0][1]], [sample[1][0]], [sample[1][1]]]), np.array([[sample[2][0]], [sample[2][1]]]))
+            sim.u_ff = current
+            sim.u_k = sim.kP * (np.array([[sample[0][0]], [sample[0][1]]]) - sim.state[0:2])
+       
+        t_since_last_control_update += dt_sim
+        sim.step()
+   
+
+   # animate_traj(result, traj, sim)
     #for i in range(n_steps):
     #    sim.step(np.array([[0],[0]]), np.array([[0],[0]]))
-    #animate_arm(sim)
-    
-def animate_traj(result, traj: Optimizer, arm: ArmSim):
+    animate_arm(sim)
+def sampleTrajectory(result, traj: Optimizer, t):
     dt = result[0] / (traj.n+1)
-    #dt = 0.25
+    prevIndex =  math.floor(t / dt)
+    nextIndex =  math.ceil(t / dt)
+    if nextIndex == prevIndex: 
+        nextIndex += 1
+    secondPrevIndex = prevIndex - 1
+    secondNextIndex = nextIndex + 1    
+
+    if secondPrevIndex < 0:
+        secondPrevIndex = 0
+    if secondNextIndex > traj.n + 1:  
+        secondNextIndex = traj.n + 1
+    position_0 = position_0 = np.interp(
+    t,
+    [prevIndex * dt, nextIndex * dt],
+    [result[1][prevIndex], result[1][nextIndex]]
+)  
+    position_1 = np.interp(
+    t,
+    [prevIndex * dt, nextIndex * dt],
+    [result[2][prevIndex], result[2][nextIndex]]
+)
+
+    velocity_0 = (result[1][nextIndex] - result[1][prevIndex]) / dt
+    velocity_1 = (result[2][nextIndex] - result[2][prevIndex]) / dt
+
+    acceleration_0 = 0
+    acceleration_1 = 0
+
+    if (t % dt) / dt < 0.5:
+        prevVelocity_0 = (result[1][prevIndex] - result[1][secondPrevIndex]) / dt
+        prevVelocity_1 = (result[2][prevIndex] - result[2][secondPrevIndex]) / dt
+        acceleration_0 = (velocity_0 - prevVelocity_0) / dt
+        acceleration_1 = (velocity_1 - prevVelocity_1) / dt
+
+    else:
+        nextVelocity_0 = (result[1][secondNextIndex] - result[1][nextIndex]) / dt
+        nextVelocity_1 = (result[2][secondNextIndex] - result[2][nextIndex]) / dt
+        acceleration_0 = (nextVelocity_0 - velocity_0) / dt
+        acceleration_1 = (nextVelocity_1 - velocity_1) / dt
+    return [[position_0, position_1], [velocity_0, velocity_1], [acceleration_0, acceleration_1]]  
+    
+
+
+def animate_traj(result, traj: Optimizer, arm: ArmSim):
+    print(result[0])
+    dt = result[0] / (traj.n+1)
+    
     fps = 1/dt
     fig = plt.figure()
     ax = fig.add_subplot(1,1,1)
@@ -358,21 +428,21 @@ def animate_arm(arm: ArmSim, fps = 40):
     def get_arm_joints(state):
         """Get the xy positions of all three robot joints (?) - base joint (at 0,0), elbow, end effector"""
         (joint_pos, eff_pos) = arm.forward_kinematics(state)
-        x = np.array([0, joint_pos[0], eff_pos[0]])
-        y = np.array([0, joint_pos[1], eff_pos[1]])
+        x = np.array([0.391, joint_pos[0], eff_pos[0]])
+        y = np.array([0.125, joint_pos[1], eff_pos[1]])
         return (x,y)
     
     dt = 1.0/fps
-    #replace 15 with total trajectory time 
-    tvec = np.arange(0, 20 + dt, dt)
+   
+    tvec = np.arange(0, arm.t + dt, dt)
 
     fig = plt.figure()
     ax = fig.add_subplot(4,4,(1,15))
     ax.axis('square')
     ax.grid(True)
     total_len = arm.constants.length_bottom + arm.constants.length_top
-    ax.set_xlim(-total_len, total_len)
-    ax.set_ylim(-total_len, total_len)
+    ax.set_xlim(-total_len+0.391, total_len+0.391)
+    ax.set_ylim(-total_len+0.125, total_len+0.125)
     initial_state = arm.log.sample(0)
     (x_init, y_init) = get_arm_joints(initial_state)
     current_line, = ax.plot(x_init, y_init, 'g-o')
@@ -381,9 +451,9 @@ def animate_arm(arm: ArmSim, fps = 40):
     ax1.set_aspect('auto')
     ax1.grid(True)
     ax1.set_xlim(0, fps)
-    ax1_line, = plot_data(0, initial_state, [4], ax = ax1)
+    ax1_line, = plot_data(0, initial_state, [5], ax = ax1)
     ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("G1 (Nm)")
+    ax1.set_ylabel("Error (degrees)")
     ax1.yaxis.set_label_position("right")
 
     queue_plotting = deque(maxlen= math.ceil((1/(2*dt))))
@@ -396,10 +466,10 @@ def animate_arm(arm: ArmSim, fps = 40):
     def animate(i):
         t = tvec[i]
         state = arm.log.sample(t)
-        queue_plotting.append(state[4])
+        queue_plotting.append(state[5].item())
         time_plotting.append(i)
         ax1.set_xlim(time_plotting[0], time_plotting[0] + fps)
-        ax1.set_ylim(-1, 1)
+        ax1.set_ylim(-3.14/6, 3.14/6)
         ax1_line.set_data(time_plotting, queue_plotting)
 
         (x_vector, y_vector) = get_arm_joints(state)

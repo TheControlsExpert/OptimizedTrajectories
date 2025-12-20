@@ -66,19 +66,19 @@ class Optimizer:
             next_theta = theta_points[i if i == self.n + 1 else i + 1]
 
             # Apply constraints to joints
-            last_velocity_2 = (
+            last_velocity_2 = ca.vertcat(
                 (last_theta[0] - last_theta_2[0]) / dt,
-                (last_theta[1] - last_theta_2[1]) / dt,
+                (last_theta[1] - last_theta_2[1]) / dt
             )
-            last_velocity = [
+            last_velocity = ca.vertcat(
                 (current_theta[0] - last_theta[0]) / dt,
                 (current_theta[1] - last_theta[1]) / dt,
-            ]
-            next_velocity = (
+            )
+            next_velocity = ca.vertcat(
                 (next_theta[0] - current_theta[0]) / dt,
                 (next_theta[1] - current_theta[1]) / dt,
             )
-            last_acceleration = (
+            last_acceleration = ca.vertcat(
                 (last_velocity[0] - last_velocity_2[0]) / dt,
                 (last_velocity[1] - last_velocity_2[1]) / dt,
             )
@@ -86,7 +86,7 @@ class Optimizer:
                 (next_velocity[0] - last_velocity[0]) / dt,
                 (next_velocity[1] - last_velocity[1]) / dt,
             )
-            jerk = (
+            jerk = ca.vertcat(
                 (acceleration[0] - last_acceleration[0]) / (2 * dt),
                 (acceleration[1] - last_acceleration[1]) / (2 * dt),
             )
@@ -95,6 +95,13 @@ class Optimizer:
             voltage_bottom, voltage_top = self.sim.motor_constants.current_to_voltage_bottom(current[0], last_velocity[0]), self.sim.motor_constants.current_to_voltage_top(current[1], last_velocity[1])
 
 
+            self.opti.subject_to(
+                self.opti.bounded(-150, acceleration[1], 150)
+            )
+
+            self.opti.subject_to(
+                self.opti.bounded(-50, jerk[1], 50)
+            )
 
             self.opti.subject_to(
                 self.opti.bounded(-self.sim.motor_constants.MAX_VOLTAGE, voltage_bottom, self.sim.motor_constants.MAX_VOLTAGE)
