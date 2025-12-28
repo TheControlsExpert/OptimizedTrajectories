@@ -97,7 +97,8 @@ class ArmSim:
         #tanh is used to add frictional torque opposing motion
 
         #previous friction model: -3 * (np.sign(state[2:4])) -> discontinuous
-        torque = np.array([u[0]*DCMotorConstants.kT_bottomArm, u[1]*DCMotorConstants.kT_topArm]).reshape((-1,1))  -3 * (np.tanh(100 * state[2:4]))
+        torque = np.array([u[0]*DCMotorConstants.kT_bottomArm, u[1]*DCMotorConstants.kT_topArm]).reshape((-1,1))  
+        -3 * (np.tanh(100 * state[2:4]))
 
        
         #my solution
@@ -307,7 +308,7 @@ class ArmConstantsReal:
         self.distance_pivot_COM_bottom = 0.52  # m
         self.length_bottom = 1 # m
 
-        self.MotorKt = 0.4
+      
        
 
         # Friction coefficients
@@ -328,7 +329,7 @@ class ArmConstantsCAD:
         self.distance_pivot_COM_bottom = 0.52  # m
         self.length_bottom = 1 # m
 
-        self.MotorKt = 0.4
+       
        
 
         # Friction coefficients
