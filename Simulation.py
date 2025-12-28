@@ -1,6 +1,8 @@
+from cmath import rect
 import sys
 
 import matplotlib as mpl
+from matplotlib import patches
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import numpy as np
@@ -20,13 +22,17 @@ import casadi as ca
 class ArmSim:
 
     def __init__(self, dt, xyparameters = [0,0]):
+        self.distance_to_reef = 0.1
         self.dt = dt
         self.transfom3d_bottomshaft = [0.249, 0.125]
         self.constants = ArmConstantsReal()
+        self.constants_optimization = ArmConstantsCAD()
         self.motor_constants = DCMotorConstants()
         start_state = np.concatenate((self.inv_kinematics(np.array([xyparameters[0], xyparameters[1]])), np.array([0,0]))).reshape((-1,1))
         self.state = start_state
-        self.target = np.array([[xyparameters[0]], [xyparameters[1]]])
+        self.target = np.array([xyparameters[0], xyparameters[1]]).reshape((-1, 1))
+        self.lastError = np.array([0,0]).reshape((-1, 1))
+        self.ErrorDerivative = np.array([0.0,0.0]).reshape((-1, 1))
         
 
         # state_labels = [("Angle Bottom", "rad"), ("Angle Top", "rad"), ("Angular velocity Bottom", "rad/s"), ("Angular velocity Top", "rad/s")]
@@ -39,7 +45,12 @@ class ArmSim:
 
         self.u_k = np.zeros((2,1))
         self.u_ff = np.zeros((2,1))
-        self.kP = 100
+        self.kP_bottom = 950
+        self.kP_top = 400
+        
+
+        self.kP2 = 120
+        self.kD = 0
 
         self.log = frc.Trajectory(np.array([self.t]), np.concatenate((start_state, np.zeros((2,1)))).reshape(-1,1))
                                                                      
@@ -47,14 +58,18 @@ class ArmSim:
        
 
     def step(self):
+        
         self.state = frc.rkdp(self.dynamics_true, self.state, self.u_ff + self.u_k, self.dt)
         self.t+= self.dt
     
     def feed_forward(self, states, accels = np.zeros((2,1))):
-        (M, C, G) = self.get_dynamics_matrices(states)
+        (M, C, G) = self.get_dynamics_matrices_CAD(states)
         omegas = states[2:4]
         torque = M @ accels + C @ omegas + G
-        return torque / self.constants.MotorKt
+
+      
+
+        return np.array([torque[0] / DCMotorConstants.kT_bottomArm, torque[1] / DCMotorConstants.kT_topArm]).reshape((-1,1))
         
     def feed_forward_casadi(self, states, accels):
         (M, C, G) = self.get_dynamics_matrices_casadi(states)
@@ -80,9 +95,10 @@ class ArmSim:
     def dynamics_true(self, state, u):
         #tanh avoids the discontinuity of signum function
         #tanh is used to add frictional torque opposing motion
-        
 
-        torque = u*self.constants.MotorKt  #-0.5 * (np.tanh(100 * state[2:4]))
+        #previous friction model: -3 * (np.sign(state[2:4])) -> discontinuous
+        torque = np.array([u[0]*DCMotorConstants.kT_bottomArm, u[1]*DCMotorConstants.kT_topArm]).reshape((-1,1))  -3 * (np.tanh(100 * state[2:4]))
+
        
         #my solution
         #torque = u*self.constants.MotorKt + np.array(Math.sign(state[2] * (-0.5)), Math.sign(state[3] * (-0.5)))
@@ -90,9 +106,14 @@ class ArmSim:
         omega_vec = state[2:4]
         accel_vector = np.linalg.inv(M) @ (torque - C @ omega_vec - G)
         state_derivative_vector = np.concatenate((omega_vec, accel_vector))
-        self.log.insert(self.t, np.concatenate((self.state, self.target - self.state[0:2])).reshape(-1,1))
-        
-        
+        error = self.target - self.state[0:2]
+        self.ErrorDerivative = (error - self.lastError) / self.dt
+       #print(self.ErrorDerivative)
+        self.lastError = error
+       
+        self.log.insert(self.t, np.concatenate((self.state, error)).reshape(-1,1))
+
+     
        # if (abs(accel_vector[0]) < 0.5 and abs(accel_vector[1]) < -0.5):
        #    print(G)
        
@@ -206,6 +227,37 @@ class ArmSim:
         
         return (M, C, G)   
     
+    def get_dynamics_matrices_CAD(self, states):
+      
+        [theta1, theta2, omega1, omega2] = states[:4].flatten()
+        c2 = np.cos(theta2)
+        s2 = np.sin(theta2)
+        c12 = np.cos(theta1 + theta2)
+
+        const = self.constants_optimization
+
+        l1 = const.length_bottom
+        r1 = const.distance_pivot_COM_bottom
+        r2 = const.distance_pivot_COM_top
+        m1 = const.mass_bottom
+        m2 = const.mass_top
+        I1 = const.moiCOM_bottom
+        I2 = const.moiCOM_top
+        g = 9.81
+
+        hM = l1*r2*c2
+        M = m1*np.array([[r1*r1, 0], [0, 0]]) + m2*np.array([[l1*l1 + r2*r2 + 2*hM, r2*r2 + hM], [r2*r2 + hM, r2*r2]]) + \
+            I1*np.array([[1, 0], [0, 0]]) + I2*np.array([[1, 1], [1, 1]])
+
+        hC = -m2*l1*r2*np.sin(theta2)
+        C = np.array([[hC*omega2, hC*omega1 + hC*omega2], [-hC*omega1, 0]])
+
+        G = g*np.cos(theta1) * np.array([[m1*r1 + m2*l1, 0]]).T + \
+            g*np.cos(theta1+theta2) * np.array([[m2*r2, m2*r2]]).T
+        
+        return (M, C, G)   
+    
+    
 
         
 
@@ -242,46 +294,55 @@ class DCMotorConstants:
     
 
 
-class ArmConstantsCAD: 
+class ArmConstantsReal: 
     def __init__(self):
         # Arm physical properties
-        self.mass_top = 2.24  # kg
-        self.moiCOM_top = 0.0862 # kg*m^2
-        self.distance_pivot_COM_top = 0.265  # m
-        self.length_top = 0.900 # m
+        self.mass_top = 2.3+0.4  # kg
+        self.moiCOM_top = 0.88+0.1 # kg*m^2
+        self.distance_pivot_COM_top = 0.29  # m
+        self.length_top = 0.85 # m
 
-        self.mass_bottom = 4.40
-        self.moiCOM_bottom = 0.413  # kg*m^2
-        self.distance_pivot_COM_bottom = 0.367  # m
-        self.length_bottom = 0.750 # m
+        self.mass_bottom = 4.49+0.4
+        self.moiCOM_bottom = 0.70+0.1  # kg*m^2
+        self.distance_pivot_COM_bottom = 0.52  # m
+        self.length_bottom = 1 # m
 
         self.MotorKt = 0.4
        
 
         # Friction coefficients
          
+         
 
 #use to test system's resilience against model mismatch between CAD and real world
-class ArmConstantsReal:
+class ArmConstantsCAD: 
     def __init__(self):
         # Arm physical properties
-        self.mass_top = 2.24  # kg
-        self.moiCOM_top = 0.0862 # kg*m^2
-        self.distance_pivot_COM_top = 0.265  # m
-        self.length_top = 0.900 # m
+        self.mass_top = 2.3  # kg
+        self.moiCOM_top = 0.88 # kg*m^2
+        self.distance_pivot_COM_top = 0.29  # m
+        self.length_top = 0.85 # m
 
-        self.mass_bottom = 4.40
-        self.moiCOM_bottom = 0.413  # kg*m^2
-        self.distance_pivot_COM_bottom = 0.367  # m
-        self.length_bottom = 0.750 # m
+        self.mass_bottom = 4.49
+        self.moiCOM_bottom = 0.70  # kg*m^2
+        self.distance_pivot_COM_bottom = 0.52  # m
+        self.length_bottom = 1 # m
 
         self.MotorKt = 0.4
+       
+
+        # Friction coefficients
+         
 def main():
-
+   
     dt_sim = 0.001
-    dt_control = 0.02
+    dt_control = 0.005
 
-    parameters_xy = [[0.391+1, 0.7+0.125], [-0.3, 1.2]]
+    #parameters_xy = [[0.391+0.1 - 0.03, 0.773], [0.391+0.1 - 0.03, 1.85]]
+   # parameters_xy = [[0.391+0.1+0.289/2, 0.5], [0.391/2, -0.1]]
+    parameters_xy = [[-0.5, 1], [0.391+0.1 - 0.03, 1.85]]
+
+
     sim = ArmSim(dt_sim, parameters_xy[0])
     traj = Optimizer(sim)
 
@@ -301,17 +362,32 @@ def main():
             t_since_last_control_update -= dt_control
             sample = sampleTrajectory(result, traj, sim.t)
             sim.target = np.array([[sample[0][0]], [sample[0][1]]]).reshape((-1,1))
-            current = sim.feed_forward(np.array([[sample[0][0]], [sample[0][1]], [sample[1][0]], [sample[1][1]]]), np.array([[sample[2][0]], [sample[2][1]]]))
+            current = sim.feed_forward(np.array([[sample[0][0]], [sample[0][1]], [sample[1][0]], [sample[1][1]]]), 
+                                       np.array([[sample[2][0]], [sample[2][1]]]))
             sim.u_ff = current
-            sim.u_k = sim.kP * (np.array([[sample[0][0]], [sample[0][1]]]) - sim.state[0:2])
+            sim.u_k = np.array([sim.kP_bottom * (sample[0][0] - sim.state[0]), sim.kP_top * (sample[0][1] - sim.state[1])])
        
         t_since_last_control_update += dt_sim
         sim.step()
+
+
+    #for i in range(math.ceil(5 / dt_sim)):
+    #   if t_since_last_control_update >= dt_control:
+    #      t_since_last_control_update -= dt_control
+    #     sim.target = np.array(thetaf).reshape((-1,1))
+    #        current = sim.feed_forward(np.array([[thetaf[0]], [thetaf[1]], [0.0], [0.0]]), np.array([[0.0], [0.0]]))
+    #       sim.u_ff = current
+    #      sim.u_k = sim.kP2 * (sim.target - sim.state[0:2])
+       
+    #   t_since_last_control_update += dt_sim
+    #  sim.step()
+
    
 
-   # animate_traj(result, traj, sim)
+    #animate_traj(result, traj, sim)
     #for i in range(n_steps):
     #    sim.step(np.array([[0],[0]]), np.array([[0],[0]]))
+    print("Simulation complete, animating")
     animate_arm(sim)
 def sampleTrajectory(result, traj: Optimizer, t):
     dt = result[0] / (traj.n+1)
@@ -360,7 +436,9 @@ def sampleTrajectory(result, traj: Optimizer, t):
 
 def animate_traj(result, traj: Optimizer, arm: ArmSim):
     print(result[0])
-    dt = result[0] / (traj.n+1)
+    #dt = result[0] / (traj.n+1)
+    dt = 1
+    
     
     fps = 1/dt
     fig = plt.figure()
@@ -370,6 +448,28 @@ def animate_traj(result, traj: Optimizer, arm: ArmSim):
     total_len = arm.constants.length_bottom + arm.constants.length_top
     ax.set_xlim(-total_len+arm.transfom3d_bottomshaft[0], total_len+arm.transfom3d_bottomshaft[0])
     ax.set_ylim(-total_len+arm.transfom3d_bottomshaft[1], total_len+arm.transfom3d_bottomshaft[1])
+
+    rect1 = patches.Rectangle((0, 0), 0.391, 0.175, linewidth=2, edgecolor='red', facecolor='red')
+    #L1 scoring position
+    rect2 = patches.Rectangle((0.391+arm.distance_to_reef, 0), 0.289, 0.454, linewidth=2, edgecolor='blue', facecolor='blue')
+    #reef pole
+    rect3 = patches.Rectangle((0.391+arm.distance_to_reef + 0.289, 0), 0.079, 1.566, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L4 horizontal bar
+    rect4 = patches.Rectangle((0.391+arm.distance_to_reef + 0.03, 0.454+1.07), 0.259, 0.042, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L4 vertical bar
+    rect5 = patches.Rectangle((0.391+arm.distance_to_reef + 0.03, 0.454+1.07), 0.042, 0.301, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L2 scoring position
+    rect6 = patches.Rectangle((0.391+arm.distance_to_reef +0.04, 0.773), 0.303, 0.042, linewidth=2, edgecolor='blue', facecolor='blue', angle = 360 - 35)
+    #L3 scoring position
+    rect7 = patches.Rectangle((0.391+arm.distance_to_reef +0.04, 0.773+0.403), 0.303, 0.042, linewidth=2, edgecolor='blue', facecolor='blue', angle = 360 - 35)
+
+    ax.add_patch(rect1)
+    ax.add_patch(rect2)
+    ax.add_patch(rect3)
+    ax.add_patch(rect4)
+    ax.add_patch(rect5)
+    ax.add_patch(rect6)
+    ax.add_patch(rect7)
 
 
     def get_arm_joints(state):
@@ -409,7 +509,7 @@ def animate_traj(result, traj: Optimizer, arm: ArmSim):
 
 
 
-def animate_arm(arm: ArmSim, fps = 40):
+def animate_arm(arm: ArmSim, fps = 20):
 
     def plot_data(t, hist, indices, ax: plt.Axes = None, lines = None):
         if ax is None and lines is None:
@@ -428,8 +528,8 @@ def animate_arm(arm: ArmSim, fps = 40):
     def get_arm_joints(state):
         """Get the xy positions of all three robot joints (?) - base joint (at 0,0), elbow, end effector"""
         (joint_pos, eff_pos) = arm.forward_kinematics(state)
-        x = np.array([0.391, joint_pos[0], eff_pos[0]])
-        y = np.array([0.125, joint_pos[1], eff_pos[1]])
+        x = np.array([arm.transfom3d_bottomshaft[0], joint_pos[0], eff_pos[0]])
+        y = np.array([arm.transfom3d_bottomshaft[1], joint_pos[1], eff_pos[1]])
         return (x,y)
     
     dt = 1.0/fps
@@ -440,9 +540,32 @@ def animate_arm(arm: ArmSim, fps = 40):
     ax = fig.add_subplot(4,4,(1,15))
     ax.axis('square')
     ax.grid(True)
+    #gearbox
+    rect1 = patches.Rectangle((0, 0), 0.391, 0.175, linewidth=2, edgecolor='red', facecolor='red')
+    #L1 scoring position
+    rect2 = patches.Rectangle((0.391+arm.distance_to_reef, 0), 0.289, 0.454, linewidth=2, edgecolor='blue', facecolor='blue')
+    #reef pole
+    rect3 = patches.Rectangle((0.391+arm.distance_to_reef + 0.289, 0), 0.079, 1.566, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L4 horizontal bar
+    rect4 = patches.Rectangle((0.391+arm.distance_to_reef + 0.03, 0.454+1.07), 0.259, 0.042, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L4 vertical bar
+    rect5 = patches.Rectangle((0.391+arm.distance_to_reef + 0.03, 0.454+1.07), 0.042, 0.301, linewidth=2, edgecolor='blue', facecolor='blue')
+    #L2 scoring position
+    rect6 = patches.Rectangle((0.391+arm.distance_to_reef +0.04, 0.773), 0.303, 0.042, linewidth=2, edgecolor='blue', facecolor='blue', angle = 360 - 35)
+    #L3 scoring position
+    rect7 = patches.Rectangle((0.391+arm.distance_to_reef +0.04, 0.773+0.403), 0.303, 0.042, linewidth=2, edgecolor='blue', facecolor='blue', angle = 360 - 35)
+
+    ax.add_patch(rect1)
+    ax.add_patch(rect2)
+    ax.add_patch(rect3)
+    ax.add_patch(rect4)
+    ax.add_patch(rect5)
+    ax.add_patch(rect6)
+    ax.add_patch(rect7)
+
     total_len = arm.constants.length_bottom + arm.constants.length_top
     ax.set_xlim(-total_len+0.391, total_len+0.391)
-    ax.set_ylim(-total_len+0.125, total_len+0.125)
+    ax.set_ylim(0, 1.9)
     initial_state = arm.log.sample(0)
     (x_init, y_init) = get_arm_joints(initial_state)
     current_line, = ax.plot(x_init, y_init, 'g-o')
@@ -453,24 +576,52 @@ def animate_arm(arm: ArmSim, fps = 40):
     ax1.set_xlim(0, fps)
     ax1_line, = plot_data(0, initial_state, [5], ax = ax1)
     ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("Error (degrees)")
+    ax1.set_ylabel("Error Top Arm (degrees)", fontsize=8)
     ax1.yaxis.set_label_position("right")
+    ax1.set_xlim(0, arm.log.end_time )
+    ax1.set_ylim(-5, 5)
 
-    queue_plotting = deque(maxlen= math.ceil((1/(2*dt))))
-    time_plotting = deque(maxlen= math.ceil(1/(2*dt)))
+    ax2 = fig.add_subplot(4,4,8)
+    ax2.set_aspect('auto')
+    ax2.grid(True)
+    ax2.set_xlim(0, fps)
+    ax2_line, = plot_data(0, initial_state, [4], ax = ax2)
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Error Bottom Arm (degrees)", fontsize=8)
+    ax2.yaxis.set_label_position("right")
+    ax2.set_xlim(0, arm.log.end_time)
+    ax2.set_ylim(-5, 5)
+
+
+    error_history_ax1 = []
+    time_history_ax1 = []
+
+    error_history_ax2 = []
+    time_history_ax2 = []
+    #time_plotting = deque(maxlen= math.ceil(1/(2*dt)))
     
     def init():
 
         current_line.set_data(x_init, y_init)
+
+        error_history_ax1.clear()
+        time_history_ax1.clear()
+
+        error_history_ax2.clear()
+        time_history_ax2.clear()
+
         return current_line
     def animate(i):
         t = tvec[i]
         state = arm.log.sample(t)
-        queue_plotting.append(state[5].item())
-        time_plotting.append(i)
-        ax1.set_xlim(time_plotting[0], time_plotting[0] + fps)
-        ax1.set_ylim(-3.14/6, 3.14/6)
-        ax1_line.set_data(time_plotting, queue_plotting)
+        error_history_ax1.append(state[5].item() * 180/math.pi)
+        time_history_ax1.append(t)
+        
+        error_history_ax2.append(state[4].item() * 180/math.pi)
+        time_history_ax2.append(t)
+      
+        ax1_line.set_data(time_history_ax1, error_history_ax1)
+        ax2_line.set_data(time_history_ax2, error_history_ax2)
 
         (x_vector, y_vector) = get_arm_joints(state)
         current_line.set_data(x_vector, y_vector)

@@ -40,14 +40,19 @@ class Optimizer:
             )
 
             joint, end_effector = self.sim.forward_kinematics_casadi(ca.vertcat(theta_0, theta_1))
+           
             #keep the arm out of the gearbox area
             normX = 2 * (end_effector[0] - (0.391)/2) / (0.391)
             normY = 2 * (end_effector[1] - (0.175/2)) / (0.175)
 
             self.opti.subject_to(      
-                    ca.fmax(ca.fabs(normX), ca.fabs(normY)) > 1          
-            )
-
+            ca.fmax(ca.fabs(normX), ca.fabs(normY)) > 1          
+           )
+            
+            normX2 = 2 * (end_effector[0] - (0.391+self.sim.distance_to_reef + (0.289+0.079)/2)) / (0.289+0.079+0.04)
+            normY2 = 2 * (end_effector[1] - (0.454+1.07+0.301)/2) / (0.454+1.07+0.301)      
+            self.opti.subject_to( ca.fmax(ca.fabs(normX2), ca.fabs(normY2)) > 1 ) 
+            
             #keep the end effector above the ground
             self.opti.subject_to(
                     end_effector[1] >= 0.05
@@ -96,11 +101,11 @@ class Optimizer:
 
 
             self.opti.subject_to(
-                self.opti.bounded(-150, acceleration[1], 150)
+                self.opti.bounded(-70, acceleration[1], 70)
             )
 
             self.opti.subject_to(
-                self.opti.bounded(-50, jerk[1], 50)
+                self.opti.bounded(-35, jerk[1], 35)
             )
 
             self.opti.subject_to(
@@ -112,12 +117,12 @@ class Optimizer:
 
             self.opti.subject_to(
                 self.opti.bounded(
-                    -self.sim.motor_constants.MAX_CURRENT, current[0], self.sim.motor_constants.MAX_CURRENT
+                    -self.sim.motor_constants.MAX_CURRENT+10, current[0], self.sim.motor_constants.MAX_CURRENT-10
                 )
             )
             self.opti.subject_to(
                 self.opti.bounded(
-                    -self.sim.motor_constants.MAX_CURRENT, current[1], self.sim.motor_constants.MAX_CURRENT
+                    -self.sim.motor_constants.MAX_CURRENT+10, current[1], self.sim.motor_constants.MAX_CURRENT-10
                 )
             )
 
@@ -173,8 +178,6 @@ class Optimizer:
             result[1].append(sol.value(theta[0]))
             result[2].append(sol.value(theta[1]))
         return result    
-
-
 
 
 
