@@ -13,7 +13,7 @@ Results are vizualized using Matplotlib's FuncAnimation()
 
 In __init__, the problem is defined: between the final angles and initial angles (which we previously found using inv. kinematics), create n=25 interior points with constant dt between them. Using finite differences, apply acceleration and jerk constraints at each interior point. Similarly, using finite differences, find the acceleration, position, and velocity requested at each interior point. Using feed_forward_casadi() in Simulator.py, turn those values into a requested current and voltage (using DCMotorConstants) and constrain those values as well. Finally, convert each interior point's angles into x,y positions using forward_kinematics_casadi() in Simulator.py and apply spatial constraints. Minimize total time.
 
-In solve(), an initial guess is made for the interior angles using linear interpolation between the initial and final angle of the trajectory. 
+In solve(), an initial guess is made for the interior angles using linear interpolation between the initial and final angle of the trajectory. Then, Ipopt solves!
 
 
 
