@@ -83,8 +83,8 @@ class ArmSim:
             C[1,0] * states[2] + C[1,1] * states[3],
         )
         current = ca.vertcat(
-            (1/self.constants.MotorKt)*(M_times_acceleration[0] + C_times_velocity[0] + G[0]),
-            (1/self.constants.MotorKt)*(M_times_acceleration[1] + C_times_velocity[1] + G[1]))
+            (1/DCMotorConstants.kT_bottomArm)*(M_times_acceleration[0] + C_times_velocity[0] + G[0]),
+            (1/DCMotorConstants.kT_topArm)*(M_times_acceleration[1] + C_times_velocity[1] + G[1]))
         
        
         return current
