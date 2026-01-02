@@ -46,7 +46,7 @@ class ArmSim:
         self.u_k = np.zeros((2,1))
         self.u_ff = np.zeros((2,1))
         self.kP_bottom = 950
-        self.kP_top = 400
+        self.kP_top = 300
         
 
         self.kP2 = 120
@@ -298,13 +298,13 @@ class DCMotorConstants:
 class ArmConstantsReal: 
     def __init__(self):
         # Arm physical properties
-        self.mass_top = 2.3+0.4  # kg
-        self.moiCOM_top = 0.88+0.1 # kg*m^2
+        self.mass_top = 2.3+0.5  # kg
+        self.moiCOM_top = 0.88 # kg*m^2
         self.distance_pivot_COM_top = 0.29  # m
         self.length_top = 0.85 # m
 
-        self.mass_bottom = 4.49+0.4
-        self.moiCOM_bottom = 0.70+0.1  # kg*m^2
+        self.mass_bottom = 4.49+0.5
+        self.moiCOM_bottom = 0.70  # kg*m^2
         self.distance_pivot_COM_bottom = 0.52  # m
         self.length_bottom = 1 # m
 
@@ -449,7 +449,7 @@ def animate_traj(result, traj: Optimizer, arm: ArmSim):
     total_len = arm.constants.length_bottom + arm.constants.length_top
     ax.set_xlim(-total_len+arm.transfom3d_bottomshaft[0], total_len+arm.transfom3d_bottomshaft[0])
     ax.set_ylim(-total_len+arm.transfom3d_bottomshaft[1], total_len+arm.transfom3d_bottomshaft[1])
-
+    #gearbox
     rect1 = patches.Rectangle((0, 0), 0.391, 0.175, linewidth=2, edgecolor='red', facecolor='red')
     #L1 scoring position
     rect2 = patches.Rectangle((0.391+arm.distance_to_reef, 0), 0.289, 0.454, linewidth=2, edgecolor='blue', facecolor='blue')
